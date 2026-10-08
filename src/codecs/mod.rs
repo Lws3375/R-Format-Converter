@@ -1,11 +1,13 @@
 //! 各格式的编解码实现。
 //!
-//! 除 PNG 使用纯 Rust DEFLATE 库处理压缩流外,各格式编解码逻辑均由本项目实现,
-//! 不依赖第三方图像库。每个模块导出一个 `register` 函数,把编解码器加入注册表。
+//! PNG 使用纯 Rust DEFLATE 库处理压缩流,JPEG 使用 Rust 图像库处理复杂的有损编码;
+//! 其余格式编解码逻辑由本项目实现。每个模块导出一个 `register` 函数,把编解码器
+//! 加入注册表。
 
 pub mod bmp;
 pub mod farbfeld;
 pub mod ico;
+pub mod jpeg;
 pub mod netpbm;
 pub mod png;
 pub mod qoi;
@@ -24,6 +26,7 @@ pub fn build_default() -> Registry {
     qoi::register(&mut registry);
     farbfeld::register(&mut registry);
     ico::register(&mut registry);
+    jpeg::register(&mut registry);
     // TGA 没有魔数,只能依据文件头取值做启发式判断,因此放在最后以免误判其他格式。
     tga::register(&mut registry);
     registry
@@ -74,7 +77,10 @@ mod tests {
     fn every_format_round_trips_pixel_exact() {
         let registry = build_default();
         let source = sample_image();
-        for format in Format::all().iter().filter(|f| f.is_implemented()) {
+        for format in Format::all()
+            .iter()
+            .filter(|f| f.is_implemented() && f.is_lossless())
+        {
             let encoded = registry
                 .encode(&source, *format, &EncodeOptions::default())
                 .unwrap_or_else(|err| panic!("{} 编码失败:{err}", format.id()));
@@ -90,7 +96,8 @@ mod tests {
             let original = source.to_rgba();
             let restored = decoded.to_rgba();
             assert_eq!(
-                original.data, restored.data,
+                original.data,
+                restored.data,
                 "{} 往返后像素不一致",
                 format.id()
             );

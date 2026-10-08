@@ -5,8 +5,8 @@
 //! 批次测试还会真正启动后台线程池,验证任务事件的顺序与汇总。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,10 +29,8 @@ impl Scratch {
     fn new(tag: &str) -> Self {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "rfc-e2e-{tag}-{}-{unique}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rfc-e2e-{tag}-{}-{unique}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("创建临时目录失败");
         Self { path }
@@ -117,12 +115,27 @@ fn every_writable_format_survives_a_round_trip() {
 
         assert_eq!(decoded.width, 37, "{} 宽度不一致", target.name());
         assert_eq!(decoded.height, 23, "{} 高度不一致", target.name());
-        assert_eq!(
-            decoded.to_rgba().data,
-            expected.data,
-            "{} 往返后像素发生变化",
-            target.name()
-        );
+        let actual = decoded.to_rgba().data;
+        if target.is_lossless() {
+            assert_eq!(
+                actual,
+                expected.data,
+                "{} 往返后像素发生变化",
+                target.name()
+            );
+        } else {
+            let total_error: u64 = actual
+                .iter()
+                .zip(&expected.data)
+                .map(|(actual, expected)| actual.abs_diff(*expected) as u64)
+                .sum();
+            let mean_error = total_error as f64 / expected.data.len() as f64;
+            assert!(
+                mean_error <= 20.0,
+                "{} JPEG 往返平均通道误差过大:{mean_error}",
+                target.name()
+            );
+        }
     }
 }
 
@@ -182,7 +195,13 @@ fn transforms_run_in_documented_order_before_encoding() {
     let bytes = std::fs::read(&outcome.output).unwrap();
     let decoded = registry.decode_as(&bytes, Format::Qoi).unwrap();
     assert!(
-        decoded.to_rgba().data.as_chunks::<4>().0.iter().all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2]),
+        decoded
+            .to_rgba()
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2]),
         "输出像素的三通道应当相等"
     );
 }

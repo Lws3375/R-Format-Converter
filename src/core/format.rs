@@ -24,7 +24,7 @@ pub enum Format {
     Png,
     /// 图形交换格式(第二阶段)。
     Gif,
-    /// JPEG(第二阶段)。
+    /// JPEG。
     Jpeg,
 }
 
@@ -85,7 +85,7 @@ impl Format {
             Format::Ico => "Windows 图标容器,内部为 BMP 结构",
             Format::Png => "支持透明度与隔行的无损压缩图像格式",
             Format::Gif => "支持动画与调色板,计划于第二阶段实现",
-            Format::Jpeg => "有损照片格式,计划于第二阶段实现",
+            Format::Jpeg => "有损照片格式,不支持透明度",
         }
     }
 
@@ -131,7 +131,7 @@ impl Format {
 
     /// 该格式是否已实现。
     pub fn is_implemented(self) -> bool {
-        !matches!(self, Format::Gif | Format::Jpeg)
+        !matches!(self, Format::Gif)
     }
 
     /// 由扩展名推断格式。
@@ -190,7 +190,7 @@ mod tests {
     fn unimplemented_formats_are_marked_unimplemented() {
         assert!(Format::Png.is_implemented());
         assert!(!Format::Gif.is_implemented());
-        assert!(!Format::Jpeg.is_implemented());
+        assert!(Format::Jpeg.is_implemented());
         assert!(Format::Bmp.is_implemented());
     }
 }
