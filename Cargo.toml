@@ -1,0 +1,32 @@
+[package]
+name = "r-format-converter"
+version = "1.0.0"
+edition = "2024"
+description = "R格式转换器"
+authors = ["R格式转换器"]
+
+[dependencies]
+# 界面框架(仅用于 UI,不参与图片编解码)
+eframe = { version = "0.36.2", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+egui = "0.36.2"
+
+rfd = "0.17.2"
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+chrono = { version = "0.4.45", features = ["serde"] }
+
+thiserror = "2.0.21"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+log = "0.4.34"
+env_logger = "0.11.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
