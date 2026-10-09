@@ -12,7 +12,7 @@ use egui::{
 
 use crate::core::format::Format;
 use crate::core::options::{EncodeOptions, NamingRule, ResizeMode, Rotation, TransformOptions};
-use crate::core::pixel::ColorType;
+use crate::core::color::ColorType;
 use crate::service::config::{AppConfig, MAX_DIMENSION};
 
 use super::theme;

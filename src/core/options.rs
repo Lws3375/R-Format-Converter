@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::core::format::Format;
-use crate::core::pixel::ColorType;
+use crate::core::color::ColorType;
 
 /// 缩放算法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

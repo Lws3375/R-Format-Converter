@@ -10,13 +10,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::codecs::ico::ICO_MAX_DIMENSION;
+use crate::codecs::ICO_MAX_DIMENSION;
 use crate::convert::transform::apply_transforms;
-use crate::core::registry::Registry;
 use crate::core::error::{ConvertError, Result};
 use crate::core::format::Format;
-use crate::core::image::Image;
+use crate::core::image::{Image, has_semi_transparent_pixel};
 use crate::core::options::ConvertOptions;
+use crate::core::registry::Registry;
 use crate::util::fs::{build_output_path, extension_of, read_file, write_file};
 
 /// 一次转换的完整结果。
@@ -114,8 +114,8 @@ pub fn convert_file(
         "转换完成:{} -> {}({}×{},{} 字节)",
         input.display(),
         output.display(),
-        image.width,
-        image.height,
+        image.width(),
+        image.height(),
         output_bytes
     );
 
@@ -124,8 +124,8 @@ pub fn convert_file(
         output,
         source_format,
         target_format: options.target,
-        width: image.width,
-        height: image.height,
+        width: image.width(),
+        height: image.height(),
         source_bytes,
         output_bytes,
         elapsed: started.elapsed(),
@@ -149,30 +149,28 @@ pub fn decode_input(registry: &Registry, path: &Path, data: &[u8]) -> Result<(Im
 
     let mut problems: Vec<String> = Vec::new();
 
-    // 第一步:扩展名匹配到的解码器通常最可靠。
+    // 第一步:扩展名匹配到的格式通常最可靠。未启用的格式(如 GIF)直接跳过,
+    // 以免把"不支持的格式"误报成"文件损坏"。
     if let Some(format) = Format::from_extension(&extension_of(path))
-        && let Some(decoder) = registry.decoder(format)
+        && registry.is_supported(format)
     {
-        match decoder.decode(data) {
+        match registry.decode_as(data, format) {
             Ok(image) => return Ok((image, format)),
             Err(err) => problems.push(format!("按扩展名「{}」解析失败:{}", format.name(), err)),
         }
     }
 
     // 第二步:按文件头嗅探,这一步不依赖文件名。
-    if let Some(decoder) = registry.detect(data) {
-        let format = decoder.format();
-        match decoder.decode(data) {
+    if let Some(format) = registry.detect(data) {
+        match registry.decode_as(data, format) {
             Ok(image) => return Ok((image, format)),
             Err(err) => problems.push(format!("按文件头识别为 {} 后解析失败:{}", format.name(), err)),
         }
     }
 
-    // 第三步:逐个解码器尝试,处理扩展名错误且没有魔数的文件(如 TGA)。
+    // 第三步:逐个格式尝试,处理扩展名错误且没有魔数的文件(如 TGA)。
     for format in registry.readable_formats() {
-        if let Some(decoder) = registry.decoder(format)
-            && let Ok(image) = decoder.decode(data)
-        {
+        if let Ok(image) = registry.decode_as(data, format) {
             log::warn!("{} 的扩展名与文件头均未匹配,已按 {} 解析", path.display(), format.name());
             return Ok((image, format));
         }
@@ -194,11 +192,14 @@ fn preflight(image: &Image, target: Format) -> Result<()> {
         )));
     }
     if target == Format::Ico
-        && (image.width > ICO_MAX_DIMENSION || image.height > ICO_MAX_DIMENSION)
+        && (image.width() > ICO_MAX_DIMENSION || image.height() > ICO_MAX_DIMENSION)
     {
         return Err(ConvertError::unsupported(format!(
             "ICO 图标最大支持 {}×{},当前图像为 {}×{},请先设置缩放",
-            ICO_MAX_DIMENSION, ICO_MAX_DIMENSION, image.width, image.height
+            ICO_MAX_DIMENSION,
+            ICO_MAX_DIMENSION,
+            image.width(),
+            image.height()
         )));
     }
     Ok(())
@@ -235,38 +236,24 @@ fn collect_notes(
     notes
 }
 
-/// 图像中是否存在非全透明也非全不透明的像素。
-fn has_semi_transparent_pixel(image: &Image) -> bool {
-    if !image.color.has_alpha() {
-        return false;
-    }
-    let channels = image.color.channels();
-    let alpha_index = channels - 1;
-    image
-        .data
-        .chunks_exact(channels)
-        .any(|pixel| pixel[alpha_index] != 0 && pixel[alpha_index] != 255)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codecs::build_default;
     use crate::core::options::{NamingRule, TransformOptions};
-    use crate::core::pixel::{ColorType, Rgba};
     use crate::util::fs::read_file as read;
     use crate::util::fs::temp_dir;
 
     /// 生成一张 6×4 的测试图,含一个半透明像素。
     fn sample() -> Image {
-        let mut image = Image::new_zeroed(6, 4, ColorType::Rgba8).unwrap();
+        let mut buffer = image::RgbaImage::new(6, 4);
         for y in 0..4 {
             for x in 0..6 {
                 let alpha = if x == 0 && y == 0 { 128 } else { 255 };
-                image.set_pixel(x, y, Rgba::new((x * 40) as u8, (y * 60) as u8, 200, alpha));
+                buffer.put_pixel(x, y, image::Rgba([(x * 40) as u8, (y * 60) as u8, 200, alpha]));
             }
         }
-        image
+        Image::ImageRgba8(buffer)
     }
 
     #[test]
@@ -292,7 +279,7 @@ mod tests {
 
         // 写出的文件能被重新读回,且像素一致。
         let restored = registry.decode(&read(&outcome.output).unwrap()).unwrap();
-        assert_eq!(restored.data, sample().data);
+        assert_eq!(restored.to_rgba8().as_raw(), sample().to_rgba8().as_raw());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -375,7 +362,7 @@ mod tests {
         )
         .unwrap();
 
-        let gray = Image::filled(2, 2, ColorType::Gray8, Rgba::from_gray(10)).unwrap();
+        let gray = Image::ImageLuma8(image::GrayImage::from_pixel(2, 2, image::Luma([10])));
         std::fs::write(
             dir.join("gray.pgm"),
             registry.encode(&gray, Format::Netpbm, &Default::default()).unwrap(),
@@ -437,7 +424,7 @@ mod tests {
     #[test]
     fn oversize_image_for_ico_is_rejected_with_hint() {
         let registry = build_default();
-        let big = Image::new_zeroed(300, 10, ColorType::Rgba8).unwrap();
+        let big = Image::ImageRgba8(image::RgbaImage::new(300, 10));
         let options = ConvertOptions::new(Format::Ico, PathBuf::new());
         let data = registry
             .encode(&big, Format::Farbfeld, &Default::default())
@@ -458,7 +445,7 @@ mod tests {
             .unwrap();
         let (image, format) = decode_input(&registry, Path::new("fake.bmp"), &data).unwrap();
         assert_eq!(format, Format::Qoi);
-        assert_eq!((image.width, image.height), (6, 4));
+        assert_eq!((image.width(), image.height()), (6, 4));
     }
 
     #[test]
@@ -521,6 +508,6 @@ mod tests {
 
         let encoded = convert_bytes(&data, &registry, &options).unwrap();
         let restored = registry.decode(&encoded).unwrap();
-        assert_eq!((restored.width, restored.height), (12, 8));
+        assert_eq!((restored.width(), restored.height()), (12, 8));
     }
 }

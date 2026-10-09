@@ -3,10 +3,18 @@
 //! 变换顺序是固定的:旋转 → 镜像 → 缩放 → 灰度 → 颜色模式。固定顺序的好处是
 //! 同样的参数无论处理多少次、在哪台机器上处理,得到的结果都完全一致,便于复现
 //! 问题,也便于批量任务与单文件任务给出一致的输出。
+//!
+//! 像素运算全部委托给 `image` 库的 `DynamicImage` 方法,这些方法会保持位图原有的
+//! 颜色模式,不会因为旋转或翻转就悄悄把灰度图变成真彩色。
 
-use crate::core::error::Result;
-use crate::core::image::Image;
+use image::imageops::FilterType;
+
+use crate::core::error::{ConvertError, Result};
+use crate::core::image::{Image, color_type, to_color, to_gray};
 use crate::core::options::{ResizeMode, Rotation, TransformOptions};
+
+/// 缩放后允许的最大像素数,防止误填超大尺寸把内存吃光。
+const MAX_PIXELS: u64 = 1 << 30;
 
 /// 按固定顺序把 [`TransformOptions`] 应用到图像上。
 ///
@@ -16,74 +24,96 @@ pub fn apply_transforms(image: Image, options: &TransformOptions) -> Result<Imag
         return Ok(image);
     }
 
-    let mut current = image;
-
-    current = match options.rotate {
-        Rotation::None => current,
-        Rotation::Deg90 => current.rotate_90(),
-        Rotation::Deg180 => current.rotate_180(),
-        Rotation::Deg270 => current.rotate_270(),
-    };
+    let mut current = rotate(image, options.rotate);
 
     if options.flip_horizontal {
-        current = current.flip_horizontal();
+        current = current.fliph();
     }
     if options.flip_vertical {
-        current = current.flip_vertical();
+        current = current.flipv();
     }
 
-    if let Some((width, height)) = options.resize {
-        // 宽或高为 0 视为"不缩放",避免生成空图像;
-        // 尺寸与当前一致时跳过,省掉一次逐像素重采样。
-        if width > 0 && height > 0 && (width != current.width || height != current.height) {
-            current = match options.resize_mode {
-                ResizeMode::Nearest => current.resize_nearest(width, height)?,
-                ResizeMode::Bilinear => current.resize_bilinear(width, height)?,
-            };
-        }
-    }
+    current = resize(current, options.resize, options.resize_mode)?;
 
     if options.grayscale {
-        current = current.to_gray();
+        current = to_gray(&current);
     }
 
     if let Some(color) = options.color
-        && color != current.color
+        && color != color_type(&current)
     {
-        current = current.convert_to(color);
+        current = to_color(&current, color);
     }
 
     Ok(current)
 }
 
+/// 旋转。90° 与 270° 会交换宽高。
+fn rotate(image: Image, rotation: Rotation) -> Image {
+    match rotation {
+        Rotation::None => image,
+        Rotation::Deg90 => image.rotate90(),
+        Rotation::Deg180 => image.rotate180(),
+        Rotation::Deg270 => image.rotate270(),
+    }
+}
+
+/// 缩放。
+///
+/// 宽或高为 0 视为"不缩放",避免生成空图像;尺寸与当前一致时跳过,省掉一次
+/// 逐像素重采样。
+fn resize(image: Image, target: Option<(u32, u32)>, mode: ResizeMode) -> Result<Image> {
+    let Some((width, height)) = target else {
+        return Ok(image);
+    };
+    if width == 0 || height == 0 {
+        return Ok(image);
+    }
+    if width == image.width() && height == image.height() {
+        return Ok(image);
+    }
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(ConvertError::unsupported(format!(
+            "缩放目标 {width}×{height} 过大,请缩小尺寸"
+        )));
+    }
+
+    let filter = match mode {
+        ResizeMode::Nearest => FilterType::Nearest,
+        ResizeMode::Bilinear => FilterType::Triangle,
+    };
+    Ok(image.resize_exact(width, height, filter))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::pixel::{ColorType, Rgba};
+    use crate::core::color::ColorType;
+    use image::Rgba;
 
     /// 4×2 的图像,左半红右半蓝,便于观察几何变换。
     fn sample() -> Image {
-        let mut image = Image::new_zeroed(4, 2, ColorType::Rgba8).unwrap();
+        let mut buffer = image::RgbaImage::new(4, 2);
         for y in 0..2 {
             for x in 0..4 {
                 let pixel = if x < 2 {
-                    Rgba::new(255, 0, 0, 255)
+                    Rgba([255, 0, 0, 255])
                 } else {
-                    Rgba::new(0, 0, 255, 255)
+                    Rgba([0, 0, 255, 255])
                 };
-                image.set_pixel(x, y, pixel);
+                buffer.put_pixel(x, y, pixel);
             }
         }
-        image
+        Image::ImageRgba8(buffer)
     }
 
     #[test]
     fn identity_keeps_pixels_untouched() {
         let image = sample();
         let result = apply_transforms(image.clone(), &TransformOptions::default()).unwrap();
-        assert_eq!(result.width, image.width);
-        assert_eq!(result.height, image.height);
-        assert_eq!(result.data, image.data);
+        assert_eq!(result.width(), image.width());
+        assert_eq!(result.height(), image.height());
+        assert_eq!(result.to_rgba8().as_raw(), image.to_rgba8().as_raw());
     }
 
     #[test]
@@ -93,7 +123,7 @@ mod tests {
             ..Default::default()
         };
         let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!((result.width, result.height), (2, 4));
+        assert_eq!((result.width(), result.height()), (2, 4));
     }
 
     #[test]
@@ -102,9 +132,20 @@ mod tests {
             flip_horizontal: true,
             ..Default::default()
         };
-        let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!(result.get_pixel(0, 0), Rgba::new(0, 0, 255, 255));
-        assert_eq!(result.get_pixel(3, 0), Rgba::new(255, 0, 0, 255));
+        let result = apply_transforms(sample(), &options).unwrap().to_rgba8();
+        assert_eq!(*result.get_pixel(0, 0), Rgba([0, 0, 255, 255]));
+        assert_eq!(*result.get_pixel(3, 0), Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn flip_vertical_keeps_horizontal_order() {
+        let options = TransformOptions {
+            flip_vertical: true,
+            ..Default::default()
+        };
+        let result = apply_transforms(sample(), &options).unwrap().to_rgba8();
+        assert_eq!(*result.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(*result.get_pixel(3, 0), Rgba([0, 0, 255, 255]));
     }
 
     #[test]
@@ -114,11 +155,11 @@ mod tests {
             resize_mode: ResizeMode::Nearest,
             ..Default::default()
         };
-        let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!((result.width, result.height), (8, 4));
+        let result = apply_transforms(sample(), &options).unwrap().to_rgba8();
+        assert_eq!((result.width(), result.height()), (8, 4));
         // 最近邻放大后仍只有两种颜色。
-        assert_eq!(result.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
-        assert_eq!(result.get_pixel(7, 0), Rgba::new(0, 0, 255, 255));
+        assert_eq!(*result.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(*result.get_pixel(7, 0), Rgba([0, 0, 255, 255]));
     }
 
     #[test]
@@ -128,7 +169,17 @@ mod tests {
             ..Default::default()
         };
         let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!((result.width, result.height), (4, 2));
+        assert_eq!((result.width(), result.height()), (4, 2));
+    }
+
+    #[test]
+    fn oversize_resize_is_rejected() {
+        let options = TransformOptions {
+            resize: Some((100_000, 100_000)),
+            ..Default::default()
+        };
+        let err = apply_transforms(sample(), &options).unwrap_err();
+        assert!(matches!(err, ConvertError::UnsupportedFeature(_)));
     }
 
     #[test]
@@ -139,11 +190,11 @@ mod tests {
             ..Default::default()
         };
         let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!(result.color, ColorType::Gray8);
+        assert_eq!(color_type(&result), ColorType::Gray8);
         // 纯红转灰度后三通道相等。
-        let pixel = result.get_pixel(0, 0);
-        assert_eq!(pixel.r, pixel.g);
-        assert_eq!(pixel.g, pixel.b);
+        let pixel = result.to_rgb8().get_pixel(0, 0).0;
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
     }
 
     #[test]
@@ -154,7 +205,7 @@ mod tests {
         };
         assert!(!options.is_identity());
         let result = apply_transforms(sample(), &options).unwrap();
-        assert_eq!(result.color, ColorType::Rgb8);
+        assert_eq!(color_type(&result), ColorType::Rgb8);
     }
 
     #[test]
@@ -170,7 +221,7 @@ mod tests {
         };
         let first = apply_transforms(sample(), &options).unwrap();
         let second = apply_transforms(sample(), &options).unwrap();
-        assert_eq!(first.data, second.data);
-        assert_eq!((first.width, first.height), (3, 3));
+        assert_eq!(first.to_rgba8().as_raw(), second.to_rgba8().as_raw());
+        assert_eq!((first.width(), first.height()), (3, 3));
     }
 }

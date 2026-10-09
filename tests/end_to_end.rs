@@ -1,8 +1,8 @@
 //! 端到端集成测试。
 //!
 //! 单元测试分别验证各个模块,这个文件反过来只通过公开接口把整条链路串起来:
-//! 用自研编码器造出输入文件 → 走完整的转换管线落到磁盘 → 再把结果读回来比对像素。
-//! 批次测试还会真正启动后台线程池,验证任务事件的顺序与汇总。
+//! 造出输入文件 → 走完整的转换管线落到磁盘 → 再把结果读回来比对像素。批次测试
+//! 还会真正启动后台线程池,验证任务事件的顺序与汇总。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use r_format_converter::codecs::build_default;
 use r_format_converter::convert::{apply_transforms, convert_file};
+use r_format_converter::core::color::ColorType;
 use r_format_converter::core::format::Format;
-use r_format_converter::core::image::Image;
+use r_format_converter::core::image::{Image, color_type};
 use r_format_converter::core::options::{ConvertOptions, EncodeOptions, ResizeMode, Rotation};
-use r_format_converter::core::pixel::{ColorType, Rgba};
 use r_format_converter::core::registry::Registry;
 use r_format_converter::service::task::{TaskEvent, TaskRunner, TaskSummary};
 use r_format_converter::util::fs;
@@ -56,20 +56,20 @@ impl Drop for Scratch {
 
 /// 造一张带水平、垂直与对角渐变的彩色图,便于发现通道或行列错位。
 fn gradient_image(width: u32, height: u32) -> Image {
-    let mut image = Image::new_zeroed(width, height, ColorType::Rgb8).expect("构造图像失败");
+    let mut buffer = image::RgbImage::new(width, height);
     let span = (width + height).max(1);
     for y in 0..height {
         for x in 0..width {
             let red = (x * 255 / width.max(1)) as u8;
             let green = (y * 255 / height.max(1)) as u8;
             let blue = ((x + y) * 255 / span) as u8;
-            image.set_pixel(x, y, Rgba::from_rgb(red, green, blue));
+            buffer.put_pixel(x, y, image::Rgb([red, green, blue]));
         }
     }
-    image
+    Image::ImageRgb8(buffer)
 }
 
-/// 用自研编码器把图像写成文件,作为后续转换的输入。
+/// 把图像按指定格式写成文件,作为后续转换的输入。
 fn write_image(registry: &Registry, image: &Image, format: Format, path: &Path) {
     let bytes = registry
         .encode(image, format, &EncodeOptions::default())
@@ -86,7 +86,7 @@ fn every_writable_format_survives_a_round_trip() {
     let source = gradient_image(37, 23);
     let input = scratch.join("source.bmp");
     write_image(&registry, &source, Format::Bmp, &input);
-    let expected = source.to_rgba();
+    let expected = source.to_rgba8();
 
     let targets = registry.writable_formats();
     assert!(!targets.is_empty(), "至少要有一个可写格式");
@@ -113,23 +113,24 @@ fn every_writable_format_survives_a_round_trip() {
             .decode_as(&bytes, target)
             .unwrap_or_else(|error| panic!("{} 回读失败:{error}", target.name()));
 
-        assert_eq!(decoded.width, 37, "{} 宽度不一致", target.name());
-        assert_eq!(decoded.height, 23, "{} 高度不一致", target.name());
-        let actual = decoded.to_rgba().data;
+        assert_eq!(decoded.width(), 37, "{} 宽度不一致", target.name());
+        assert_eq!(decoded.height(), 23, "{} 高度不一致", target.name());
+        let actual = decoded.to_rgba8();
         if target.is_lossless() {
             assert_eq!(
-                actual,
-                expected.data,
+                actual.as_raw(),
+                expected.as_raw(),
                 "{} 往返后像素发生变化",
                 target.name()
             );
         } else {
             let total_error: u64 = actual
+                .as_raw()
                 .iter()
-                .zip(&expected.data)
+                .zip(expected.as_raw())
                 .map(|(actual, expected)| actual.abs_diff(*expected) as u64)
                 .sum();
-            let mean_error = total_error as f64 / expected.data.len() as f64;
+            let mean_error = total_error as f64 / expected.as_raw().len() as f64;
             assert!(
                 mean_error <= 20.0,
                 "{} JPEG 往返平均通道误差过大:{mean_error}",
@@ -158,8 +159,8 @@ fn source_format_is_detected_from_content_not_extension() {
     let bytes = std::fs::read(&outcome.output).unwrap();
     let decoded = registry.decode_as(&bytes, Format::Farbfeld).unwrap();
     assert_eq!(
-        decoded.to_rgba().data,
-        source.to_rgba().data,
+        decoded.to_rgba8().as_raw(),
+        source.to_rgba8().as_raw(),
         "内容识别后往返仍应无损"
     );
 }
@@ -188,16 +189,20 @@ fn transforms_run_in_documented_order_before_encoding() {
 
     // 直接调变换管线,确认灰度把颜色模式降成了单通道。
     let transformed = apply_transforms(source.clone(), &options.transform).expect("变换应当成功");
-    assert_eq!((transformed.width, transformed.height), (16, 8));
-    assert!(transformed.is_gray(), "变换结果应当是单通道灰度图");
+    assert_eq!((transformed.width(), transformed.height()), (16, 8));
+    assert_eq!(
+        color_type(&transformed),
+        ColorType::Gray8,
+        "变换结果应当是单通道灰度图"
+    );
 
     // QOI 没有灰度色彩空间,落盘时按 RGB 保存,所以这里按像素判断灰度。
     let bytes = std::fs::read(&outcome.output).unwrap();
     let decoded = registry.decode_as(&bytes, Format::Qoi).unwrap();
     assert!(
         decoded
-            .to_rgba()
-            .data
+            .to_rgba8()
+            .as_raw()
             .as_chunks::<4>()
             .0
             .iter()
@@ -303,13 +308,13 @@ fn batch_runner_converts_every_file_across_worker_threads() {
         // 输入尺寸是 (20 + index, 12 + index),输出应当保持不受影响。
         let expected = (20 + *index as u32, 12 + *index as u32);
         assert_eq!(
-            (decoded.width, decoded.height),
+            (decoded.width(), decoded.height()),
             expected,
             "第 {index} 个输出尺寸不符"
         );
         assert_eq!(
-            decoded.to_rgba().data,
-            gradient_image(expected.0, expected.1).to_rgba().data,
+            decoded.to_rgba8().as_raw(),
+            gradient_image(expected.0, expected.1).to_rgba8().as_raw(),
             "第 {index} 个输出像素与源图不符"
         );
     }

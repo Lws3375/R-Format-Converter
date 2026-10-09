@@ -266,7 +266,6 @@ mod tests {
     use super::*;
     use crate::codecs::build_default;
     use crate::core::format::Format;
-    use crate::core::pixel::{ColorType, Rgba};
     use crate::core::image::Image;
     use crate::core::options::EncodeOptions;
     use crate::util::fs::temp_dir;
@@ -280,8 +279,9 @@ mod tests {
         let dir = temp_dir(tag);
         let mut files = Vec::new();
         for index in 0..count {
-            let mut image = Image::new_zeroed(side, side, ColorType::Rgba8).unwrap();
-            image.set_pixel(0, 0, Rgba::new(index as u8, 10, 20, 255));
+            let mut buffer = image::RgbaImage::new(side, side);
+            buffer.put_pixel(0, 0, image::Rgba([index as u8, 10, 20, 255]));
+            let image = Image::ImageRgba8(buffer);
             let bytes = registry
                 .encode(&image, Format::Bmp, &EncodeOptions::default())
                 .unwrap();

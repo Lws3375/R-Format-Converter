@@ -1,14 +1,13 @@
 //! 核心层模块声明与全局常量。
 //!
-//! 核心层不依赖界面框架,只描述"图像是什么"以及"如何编解码",因此可以脱离
+//! 核心层不依赖界面框架,只描述"图像是什么"以及"支持哪些格式",因此可以脱离
 //! GUI 单独进行单元测试。
 
-pub mod codec;
+pub mod color;
 pub mod error;
 pub mod format;
 pub mod image;
 pub mod options;
-pub mod pixel;
 pub mod registry;
 
 /// 软件名称,用于窗口标题与日志。
