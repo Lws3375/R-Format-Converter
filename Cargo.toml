@@ -21,7 +21,6 @@ chrono = { version = "0.4.45", features = ["serde"] }
 
 thiserror = "2.0.21"
 
-# 只启用软件实际支持的格式,避免把无关的编解码器打进发布包。
 image = { version = "0.25", default-features = false, features = [
     "bmp",
     "ff",

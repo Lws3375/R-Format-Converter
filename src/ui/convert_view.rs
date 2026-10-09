@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use egui::{RichText, Ui};
+use image::imageops::FilterType;
 
 use crate::core::image::Image;
 use crate::convert::pipeline::decode_input;
@@ -118,7 +119,7 @@ impl ConvertView {
                 ui.label(RichText::new("单文件转换").size(20.0).strong());
                 widgets::hint(
                     ui,
-                    "选择源文件,设定目标格式与可选变换,即可转换。所有图解码与编码均由本软件自行实现。",
+                    "选择源文件,设定目标格式与可选变换,即可转换。全部转换过程都在本机离线完成。",
                 );
 
                 widgets::section(ui, "输入文件", |ui| {
@@ -379,12 +380,11 @@ impl ConvertView {
             return;
         };
 
-        self.source_size = (image.width, image.height);
-        let preview = downscale_for_preview(&image);
-        let rgba = preview.to_rgba();
+        self.source_size = (image.width(), image.height());
+        let preview = downscale_for_preview(&image).to_rgba8();
         let color_image = egui::ColorImage::from_rgba_unmultiplied(
-            [rgba.width as usize, rgba.height as usize],
-            &rgba.data,
+            [preview.width() as usize, preview.height() as usize],
+            preview.as_raw(),
         );
         self.preview = Some(ui.ctx().load_texture(
             format!("source-preview:{key:?}"),
@@ -396,16 +396,14 @@ impl ConvertView {
 
 /// 把图像等比缩小到预览尺寸以内,避免超大图直接上传纹理。
 fn downscale_for_preview(image: &Image) -> Image {
-    let longest = image.width.max(image.height);
+    let longest = image.width().max(image.height());
     if longest <= PREVIEW_MAX_SIDE || longest == 0 {
         return image.clone();
     }
     let scale = PREVIEW_MAX_SIDE as f64 / longest as f64;
-    let width = ((image.width as f64 * scale).round() as u32).max(1);
-    let height = ((image.height as f64 * scale).round() as u32).max(1);
-    image
-        .resize_bilinear(width, height)
-        .unwrap_or_else(|_| image.clone())
+    let width = ((image.width() as f64 * scale).round() as u32).max(1);
+    let height = ((image.height() as f64 * scale).round() as u32).max(1);
+    image.resize_exact(width, height, FilterType::Triangle)
 }
 
 /// 弹出文件选择框,可读格式与扩展名完全来自注册表。
@@ -434,14 +432,12 @@ pub fn pick_input_files(
 mod tests {
     use super::*;
     use crate::codecs::build_default;
-    use crate::core::pixel::ColorType;
     use crate::service::config::AppConfig;
     use crate::service::history::HistoryStore;
     use crate::ui::run_frame;
 
     fn sample_image() -> Image {
-        Image::filled(4, 3, ColorType::Rgba8, crate::core::pixel::Rgba::new(1, 2, 3, 255))
-            .expect("构造测试图像")
+        Image::ImageRgba8(image::RgbaImage::from_pixel(4, 3, image::Rgba([1, 2, 3, 255])))
     }
 
     fn sample_outcome() -> ConversionOutcome {
@@ -509,17 +505,16 @@ mod tests {
     fn downscale_keeps_small_images_untouched() {
         let image = sample_image();
         let preview = downscale_for_preview(&image);
-        assert_eq!(preview.width, 4);
-        assert_eq!(preview.height, 3);
+        assert_eq!(preview.width(), 4);
+        assert_eq!(preview.height(), 3);
     }
 
     #[test]
     fn downscale_preserves_aspect_ratio() {
-        let image = Image::filled(2000, 1000, ColorType::Gray8, crate::core::pixel::Rgba::new(0, 0, 0, 255))
-            .expect("构造测试图像");
+        let image = Image::ImageLuma8(image::GrayImage::new(2000, 1000));
         let preview = downscale_for_preview(&image);
-        assert_eq!(preview.width, PREVIEW_MAX_SIDE);
-        assert_eq!(preview.height, PREVIEW_MAX_SIDE / 2);
+        assert_eq!(preview.width(), PREVIEW_MAX_SIDE);
+        assert_eq!(preview.height(), PREVIEW_MAX_SIDE / 2);
     }
 
     #[test]
