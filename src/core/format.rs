@@ -22,10 +22,16 @@ pub enum Format {
     Ico,
     /// 便携式网络图形。
     Png,
-    /// 图形交换格式(第二阶段)。
+    /// 图形交换格式。
     Gif,
     /// JPEG。
     Jpeg,
+    /// WebP 格式。
+    Webp,
+    /// 可缩放矢量图形。
+    Svg,
+    /// 高效率图像格式(预留规划项)。
+    Heic,
 }
 
 impl Format {
@@ -41,6 +47,9 @@ impl Format {
             Format::Png,
             Format::Gif,
             Format::Jpeg,
+            Format::Webp,
+            Format::Svg,
+            Format::Heic,
         ]
     }
 
@@ -56,6 +65,9 @@ impl Format {
             Format::Png => "png",
             Format::Gif => "gif",
             Format::Jpeg => "jpeg",
+            Format::Webp => "webp",
+            Format::Svg => "svg",
+            Format::Heic => "heic",
         }
     }
 
@@ -71,6 +83,9 @@ impl Format {
             Format::Png => "PNG 图像",
             Format::Gif => "GIF 图像",
             Format::Jpeg => "JPEG 图像",
+            Format::Webp => "WebP 图像",
+            Format::Svg => "SVG 矢量图",
+            Format::Heic => "HEIC 图像",
         }
     }
 
@@ -86,6 +101,9 @@ impl Format {
             Format::Png => "支持透明度与隔行的无损压缩图像格式",
             Format::Gif => "动图与调色板格式,支持 256 色与二值透明度",
             Format::Jpeg => "有损照片格式,不支持透明度",
+            Format::Webp => "现代网页图像格式,支持无损与透明通道",
+            Format::Svg => "可缩放矢量图形,输入时光栅化渲染,输出时封装为矢量容器",
+            Format::Heic => "高效率图像格式,规划中",
         }
     }
 
@@ -101,6 +119,9 @@ impl Format {
             Format::Png => &["png"],
             Format::Gif => &["gif"],
             Format::Jpeg => &["jpg", "jpeg", "jpe"],
+            Format::Webp => &["webp"],
+            Format::Svg => &["svg", "svgz"],
+            Format::Heic => &["heic", "heif"],
         }
     }
 
@@ -116,22 +137,25 @@ impl Format {
             Format::Png => "png",
             Format::Gif => "gif",
             Format::Jpeg => "jpg",
+            Format::Webp => "webp",
+            Format::Svg => "svg",
+            Format::Heic => "heic",
         }
     }
 
     /// 该格式是否支持透明度。
     pub fn supports_alpha(self) -> bool {
-        !matches!(self, Format::Jpeg)
+        !matches!(self, Format::Jpeg | Format::Heic)
     }
 
     /// 是否为无损格式。
     pub fn is_lossless(self) -> bool {
-        !matches!(self, Format::Jpeg | Format::Gif)
+        !matches!(self, Format::Jpeg | Format::Gif | Format::Heic)
     }
 
     /// 该格式是否已实现。
     pub fn is_implemented(self) -> bool {
-        true
+        !matches!(self, Format::Heic)
     }
 
     /// 由扩展名推断格式。
@@ -165,7 +189,9 @@ mod tests {
         assert_eq!(Format::from_extension("BMP"), Some(Format::Bmp));
         assert_eq!(Format::from_extension(".jpeg"), Some(Format::Jpeg));
         assert_eq!(Format::from_extension("pgm"), Some(Format::Netpbm));
-        assert_eq!(Format::from_extension("webp"), None);
+        assert_eq!(Format::from_extension("webp"), Some(Format::Webp));
+        assert_eq!(Format::from_extension("svg"), Some(Format::Svg));
+        assert_eq!(Format::from_extension("avif"), None);
     }
 
     #[test]
@@ -187,9 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn all_formats_are_implemented() {
-        for format in Format::all() {
-            assert!(format.is_implemented(), "{} 应已标记为实现", format.id());
-        }
+    fn format_implementation_status() {
+        assert!(Format::Webp.is_implemented());
+        assert!(Format::Svg.is_implemented());
+        assert!(Format::Png.is_implemented());
+        assert!(!Format::Heic.is_implemented());
     }
 }

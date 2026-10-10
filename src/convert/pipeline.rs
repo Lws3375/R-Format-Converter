@@ -430,6 +430,30 @@ mod tests {
     }
 
     #[test]
+    fn webp_and_svg_target_conversions_succeed() {
+        let registry = build_default();
+        let data = registry
+            .encode(&sample(), Format::Qoi, &Default::default())
+            .unwrap();
+
+        let webp_options = ConvertOptions::new(Format::Webp, PathBuf::new());
+        assert!(convert_bytes(&data, &registry, &webp_options).is_ok());
+
+        let svg_options = ConvertOptions::new(Format::Svg, PathBuf::new());
+        assert!(convert_bytes(&data, &registry, &svg_options).is_ok());
+    }
+
+    #[test]
+    fn unimplemented_target_is_rejected_before_encoding() {
+        let options = ConvertOptions::new(Format::Heic, PathBuf::new());
+        let err = preflight(&sample(), options.target).unwrap_err();
+        match err {
+            ConvertError::UnsupportedFeature(message) => assert!(message.contains("HEIC")),
+            other => panic!("期望 UnsupportedFeature,实际 {other:?}"),
+        }
+    }
+
+    #[test]
     fn oversize_image_for_gif_is_rejected_with_hint() {
         let big = Image::ImageRgb8(image::RgbImage::new(65536, 1));
         let options = ConvertOptions::new(Format::Gif, PathBuf::new());

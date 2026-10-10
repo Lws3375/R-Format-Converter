@@ -116,7 +116,7 @@ mod tests {
                 format.id()
             );
         }
-        assert_eq!(registry.codec_count(), 9);
+        assert_eq!(registry.codec_count(), 11);
     }
 
     #[test]
@@ -133,11 +133,22 @@ mod tests {
     }
 
     #[test]
+    fn unimplemented_format_explains_itself() {
+        let registry = Registry::new(vec![Format::Heic]);
+        let err = registry
+            .decode_as(b"", Format::Heic)
+            .expect_err("HEIC 尚未实现时不应解码成功");
+        assert!(matches!(err, ConvertError::UnsupportedFeature(_)));
+    }
+
+    #[test]
     fn implemented_format_passes_check() {
         let registry = build_default();
         let image = Image::ImageRgba8(image::RgbaImage::new(1, 1));
         assert!(registry.output_extension(&image, Format::Gif) == "gif");
         assert!(registry.is_supported(Format::Gif));
+        assert!(registry.is_supported(Format::Webp));
+        assert!(registry.is_supported(Format::Svg));
     }
 
     #[test]

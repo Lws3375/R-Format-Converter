@@ -352,6 +352,16 @@ pub fn encode_editor(ui: &mut Ui, options: &mut EncodeOptions, format: Format) -
             ui,
             "GIF 格式使用 256 色调色板与 LZW 压缩算法,无需额外编码参数。",
         );
+    } else if format == Format::Webp {
+        hint(
+            ui,
+            "WebP 格式使用无损 VP8L 压缩算法,兼顾高压缩率与完全保真。",
+        );
+    } else if format == Format::Svg {
+        hint(
+            ui,
+            "SVG 格式将输出封装为矢量容器 (<image> 标签),支持任意比例无损缩放。",
+        );
     } else {
         field(ui, "编码质量", |ui| {
             let mut quality = options.quality as f64;
@@ -571,6 +581,16 @@ mod tests {
         let mut options = EncodeOptions::default();
         let changed = run_frame(&ctx, |ui| encode_editor(ui, &mut options, Format::Gif));
         assert!(!changed);
+    }
+
+    #[test]
+    fn encode_editor_renders_webp_and_svg_hint() {
+        let ctx = egui::Context::default();
+        let mut options = EncodeOptions::default();
+        let changed_webp = run_frame(&ctx, |ui| encode_editor(ui, &mut options, Format::Webp));
+        assert!(!changed_webp);
+        let changed_svg = run_frame(&ctx, |ui| encode_editor(ui, &mut options, Format::Svg));
+        assert!(!changed_svg);
     }
 
     #[test]

@@ -167,6 +167,48 @@ fn gif_round_trip_conversion_and_notes() {
 }
 
 #[test]
+fn webp_and_svg_round_trip_conversions() {
+    let registry = build_default();
+    let scratch = Scratch::new("webp-svg");
+
+    let source = gradient_image(48, 36);
+    let input = scratch.join("source.bmp");
+    write_image(&registry, &source, Format::Bmp, &input);
+
+    // BMP -> WebP -> PNG
+    let webp_dir = scratch.subdir("webp_out");
+    let options_webp = ConvertOptions::new(Format::Webp, webp_dir);
+    let outcome_webp = convert_file(&input, &registry, &options_webp).expect("转为 WebP 应当成功");
+    assert_eq!(outcome_webp.target_format, Format::Webp);
+    assert_eq!((outcome_webp.width, outcome_webp.height), (48, 36));
+
+    let png_from_webp_dir = scratch.subdir("png_from_webp");
+    let outcome_png1 = convert_file(
+        &outcome_webp.output,
+        &registry,
+        &ConvertOptions::new(Format::Png, png_from_webp_dir),
+    )
+    .expect("从 WebP 转为 PNG 应当成功");
+    assert_eq!(outcome_png1.source_format, Format::Webp);
+
+    // BMP -> SVG -> PNG
+    let svg_dir = scratch.subdir("svg_out");
+    let options_svg = ConvertOptions::new(Format::Svg, svg_dir);
+    let outcome_svg = convert_file(&input, &registry, &options_svg).expect("转为 SVG 应当成功");
+    assert_eq!(outcome_svg.target_format, Format::Svg);
+    assert_eq!((outcome_svg.width, outcome_svg.height), (48, 36));
+
+    let png_from_svg_dir = scratch.subdir("png_from_svg");
+    let outcome_png2 = convert_file(
+        &outcome_svg.output,
+        &registry,
+        &ConvertOptions::new(Format::Png, png_from_svg_dir),
+    )
+    .expect("从 SVG 转为 PNG 应当成功");
+    assert_eq!(outcome_png2.source_format, Format::Svg);
+}
+
+#[test]
 fn source_format_is_detected_from_content_not_extension() {
     let registry = build_default();
     let scratch = Scratch::new("sniff");

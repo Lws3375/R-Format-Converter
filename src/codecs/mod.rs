@@ -36,26 +36,30 @@ pub fn build_default() -> Registry {
         Format::Netpbm,
         Format::Png,
         Format::Gif,
+        Format::Webp,
         Format::Qoi,
         Format::Farbfeld,
         Format::Ico,
         Format::Jpeg,
+        Format::Svg,
         Format::Tga,
     ])
 }
 
 /// 内部格式与 `image` 库格式之间的映射。
-fn image_format(format: Format) -> ImageFormat {
+fn image_format(format: Format) -> Option<ImageFormat> {
     match format {
-        Format::Bmp => ImageFormat::Bmp,
-        Format::Netpbm => ImageFormat::Pnm,
-        Format::Tga => ImageFormat::Tga,
-        Format::Qoi => ImageFormat::Qoi,
-        Format::Farbfeld => ImageFormat::Farbfeld,
-        Format::Ico => ImageFormat::Ico,
-        Format::Png => ImageFormat::Png,
-        Format::Jpeg => ImageFormat::Jpeg,
-        Format::Gif => ImageFormat::Gif,
+        Format::Bmp => Some(ImageFormat::Bmp),
+        Format::Netpbm => Some(ImageFormat::Pnm),
+        Format::Tga => Some(ImageFormat::Tga),
+        Format::Qoi => Some(ImageFormat::Qoi),
+        Format::Farbfeld => Some(ImageFormat::Farbfeld),
+        Format::Ico => Some(ImageFormat::Ico),
+        Format::Png => Some(ImageFormat::Png),
+        Format::Jpeg => Some(ImageFormat::Jpeg),
+        Format::Gif => Some(ImageFormat::Gif),
+        Format::Webp => Some(ImageFormat::WebP),
+        Format::Svg | Format::Heic => None,
     }
 }
 
@@ -64,16 +68,24 @@ fn image_format(format: Format) -> ImageFormat {
 /// TGA 没有固定魔数,`image` 库无法嗅探,这种情况返回 `None`,由调用方按扩展名
 /// 或逐个尝试兜底。
 pub fn detect(data: &[u8]) -> Option<Format> {
+    if detect_svg(data) {
+        return Some(Format::Svg);
+    }
     let sniffed = image::guess_format(data).ok()?;
     Format::all()
         .iter()
         .copied()
-        .find(|format| image_format(*format) == sniffed)
+        .find(|format| image_format(*format) == Some(sniffed))
 }
 
 /// 解码为内存位图,并统一到 8 位深度。
 pub fn decode(data: &[u8], format: Format) -> Result<Image> {
-    let image = image::load_from_memory_with_format(data, image_format(format))
+    if format == Format::Svg {
+        return decode_svg(data);
+    }
+    let img_format = image_format(format)
+        .ok_or_else(|| ConvertError::unsupported(format!("{}暂不支持解码", format.name())))?;
+    let image = image::load_from_memory_with_format(data, img_format)
         .map_err(|error| ConvertError::corrupt(error.to_string()))?;
     if image.width() == 0 || image.height() == 0 {
         return Err(ConvertError::corrupt("图像尺寸为零"));
@@ -83,12 +95,19 @@ pub fn decode(data: &[u8], format: Format) -> Result<Image> {
 
 /// 编码为字节流。
 pub fn encode(image: &Image, format: Format, options: &EncodeOptions) -> Result<Vec<u8>> {
+    if format == Format::Svg {
+        return encode_svg(image);
+    }
     let prepared = prepare_for(image, format);
     let prepared = prepared.as_ref();
     match format {
         Format::Jpeg => encode_with_jpeg(prepared, options.quality),
         Format::Png => encode_with_png(prepared, options.png_compression_level),
-        other => encode_default(prepared, image_format(other)),
+        other => {
+            let img_format = image_format(other)
+                .ok_or_else(|| ConvertError::unsupported(format!("{}暂不支持编码", other.name())))?;
+            encode_default(prepared, img_format)
+        }
     }
 }
 
@@ -183,6 +202,120 @@ fn png_compression(level: u8) -> CompressionType {
         4..=7 => CompressionType::Default,
         _ => CompressionType::Best,
     }
+}
+
+/// 按文件头/内容嗅探 SVG。
+fn detect_svg(data: &[u8]) -> bool {
+    if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+        use std::io::Read;
+        let mut gz = flate2::read::GzDecoder::new(data);
+        let mut buf = [0u8; 512];
+        if let Ok(n) = gz.read(&mut buf)
+            && let Ok(text) = std::str::from_utf8(&buf[..n])
+            && text.contains("<svg")
+        {
+            return true;
+        }
+    }
+    let head = if data.len() > 1024 { &data[..1024] } else { data };
+    if let Ok(text) = std::str::from_utf8(head) {
+        let trimmed = text.trim_start();
+        if trimmed.starts_with("<svg") || (trimmed.starts_with("<?xml") && text.contains("<svg")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 解码 SVG 为位图。
+fn decode_svg(data: &[u8]) -> Result<Image> {
+    use std::io::Read;
+    let decompressed: Vec<u8>;
+    let svg_bytes = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+        let mut gz = flate2::read::GzDecoder::new(data);
+        let mut buf = Vec::new();
+        gz.read_to_end(&mut buf)
+            .map_err(|e| ConvertError::corrupt(format!("解压 svgz 失败: {e}")))?;
+        decompressed = buf;
+        &decompressed
+    } else {
+        data
+    };
+
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(svg_bytes, &opt)
+        .map_err(|e| ConvertError::corrupt(format!("SVG 解析失败: {e}")))?;
+
+    let width = (tree.size().width().round() as u32).max(1);
+    let height = (tree.size().height().round() as u32).max(1);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| ConvertError::corrupt("分配渲染画布失败"))?;
+
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+    // 将预乘 Alpha 转为直角 Alpha (straight RGBA)
+    let pixels = pixmap.data();
+    let mut rgba = Vec::with_capacity(pixels.len());
+    for chunk in pixels.as_chunks::<4>().0 {
+        let a = chunk[3] as u32;
+        if a == 0 {
+            rgba.extend_from_slice(&[0, 0, 0, 0]);
+        } else if a == 255 {
+            rgba.extend_from_slice(chunk);
+        } else {
+            let r = ((chunk[0] as u32 * 255 + a / 2) / a) as u8;
+            let g = ((chunk[1] as u32 * 255 + a / 2) / a) as u8;
+            let b = ((chunk[2] as u32 * 255 + a / 2) / a) as u8;
+            rgba.extend_from_slice(&[r, g, b, chunk[3]]);
+        }
+    }
+
+    let buffer = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| ConvertError::corrupt("构建 RGBA 图像失败"))?;
+    Ok(Image::ImageRgba8(buffer))
+}
+
+/// 编码为标准 SVG 矢量容器文件 (内嵌 PNG Base64)。
+fn encode_svg(image: &Image) -> Result<Vec<u8>> {
+    let mut png_bytes = Cursor::new(Vec::new());
+    image
+        .write_to(&mut png_bytes, ImageFormat::Png)
+        .map_err(|e| ConvertError::corrupt(e.to_string()))?;
+    let b64 = to_base64(&png_bytes.into_inner());
+    let width = image.width();
+    let height = image.height();
+    let svg_content = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <image width="{width}" height="{height}" href="data:image/png;base64,{b64}"/>
+</svg>
+"#
+    );
+    Ok(svg_content.into_bytes())
+}
+
+/// 简单高效的 Base64 编码。
+fn to_base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 15) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -358,5 +491,43 @@ mod tests {
             (decoded.width(), decoded.height()),
             (source.width(), source.height())
         );
+    }
+
+    #[test]
+    fn webp_round_trip_preserves_dimensions_and_pixels() {
+        let registry = build_default();
+        let source = sample_image();
+        let encoded = registry
+            .encode(&source, Format::Webp, &EncodeOptions::default())
+            .expect("WebP 编码失败");
+        let detected = registry.detect(&encoded);
+        assert_eq!(detected, Some(Format::Webp));
+        let decoded = registry
+            .decode_as(&encoded, Format::Webp)
+            .expect("WebP 解码失败");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (source.width(), source.height())
+        );
+        assert_eq!(decoded.to_rgba8().as_raw(), source.to_rgba8().as_raw());
+    }
+
+    #[test]
+    fn svg_round_trip_preserves_dimensions_and_pixels() {
+        let registry = build_default();
+        let source = sample_image();
+        let encoded = registry
+            .encode(&source, Format::Svg, &EncodeOptions::default())
+            .expect("SVG 编码失败");
+        let detected = registry.detect(&encoded);
+        assert_eq!(detected, Some(Format::Svg));
+        let decoded = registry
+            .decode_as(&encoded, Format::Svg)
+            .expect("SVG 解码失败");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (source.width(), source.height())
+        );
+        assert_eq!(decoded.to_rgba8().as_raw(), source.to_rgba8().as_raw());
     }
 }

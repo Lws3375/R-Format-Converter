@@ -31,7 +31,10 @@ image = { version = "0.25", default-features = false, features = [
     "pnm",
     "qoi",
     "tga",
+    "webp",
 ] }
+
+resvg = "0.48"
 
 log = "0.4.34"
 env_logger = "0.11.11"
