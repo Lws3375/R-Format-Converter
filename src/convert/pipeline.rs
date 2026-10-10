@@ -15,7 +15,9 @@ use crate::convert::transform::apply_transforms;
 use crate::core::error::{ConvertError, Result};
 use crate::core::format::Format;
 use crate::core::image::{Image, has_semi_transparent_pixel};
-use crate::core::options::ConvertOptions;
+use crate::core::options::{
+    CompressFormatStrategy, CompressOptions, ConvertOptions, EncodeOptions,
+};
 use crate::core::registry::Registry;
 use crate::util::fs::{build_output_path, extension_of, read_file, write_file};
 
@@ -124,6 +126,108 @@ pub fn convert_file(
         output,
         source_format,
         target_format: options.target,
+        width: image.width(),
+        height: image.height(),
+        source_bytes,
+        output_bytes,
+        elapsed: started.elapsed(),
+        notes,
+    })
+}
+
+/// 压缩一个文件。
+///
+/// 流程：读入文件 -> 嗅探解码 -> 降采样(如有) -> 决定目标格式与编码参数 -> 编码写出 -> 收集节省体积报告。
+pub fn compress_file(
+    input: &Path,
+    registry: &Registry,
+    options: &CompressOptions,
+) -> Result<ConversionOutcome> {
+    let started = Instant::now();
+
+    let data = read_file(input)?;
+    let source_bytes = data.len() as u64;
+
+    let (image, source_format) = decode_input(registry, input, &data)?;
+
+    // 应用降采样
+    let image = crate::convert::transform::downscale_by_limit(image, options.downscale)?;
+
+    // 确定目标格式
+    let target_format = match options.format_strategy {
+        CompressFormatStrategy::KeepOriginal => {
+            // 若原格式已实现编码写出，则保持原格式；否则回退到通用格式 PNG
+            if source_format.is_implemented()
+                && registry.is_supported(source_format)
+                && source_format != Format::Svg
+            {
+                source_format
+            } else {
+                Format::Png
+            }
+        }
+        CompressFormatStrategy::Webp => Format::Webp,
+        CompressFormatStrategy::Jpeg => Format::Jpeg,
+    };
+
+    preflight(&image, target_format)?;
+
+    // 构造针对该目标格式的 EncodeOptions
+    let encode_options = EncodeOptions {
+        quality: options.quality,
+        png_compression_level: options.png_level,
+        png_fast_mode: options.png_fast_mode,
+    };
+
+    let encoded = registry.encode(&image, target_format, &encode_options)?;
+
+    let output_dir = if options.output_dir.as_os_str().is_empty() {
+        input
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        options.output_dir.clone()
+    };
+
+    let extension = registry.output_extension(&image, target_format);
+    let output = build_output_path(
+        input,
+        &output_dir,
+        extension,
+        options.naming,
+        options.overwrite,
+    );
+    write_file(&output, &encoded)?;
+
+    let output_bytes = encoded.len() as u64;
+    let mut notes = collect_notes(&image, source_format, target_format, source_bytes, output_bytes);
+
+    if output_bytes < source_bytes {
+        let saved = source_bytes - output_bytes;
+        let pct = (saved as f64 / source_bytes as f64) * 100.0;
+        notes.push(format!(
+            "压缩已节省 {}({:.1}%) 空间",
+            crate::util::fs::human_size(saved),
+            pct
+        ));
+    }
+
+    log::info!(
+        "压缩完成:{} -> {}({}×{},{} -> {} 字节)",
+        input.display(),
+        output.display(),
+        image.width(),
+        image.height(),
+        source_bytes,
+        output_bytes
+    );
+
+    Ok(ConversionOutcome {
+        input: input.to_path_buf(),
+        output,
+        source_format,
+        target_format,
         width: image.width(),
         height: image.height(),
         source_bytes,
@@ -552,5 +656,31 @@ mod tests {
         let encoded = convert_bytes(&data, &registry, &options).unwrap();
         let restored = registry.decode(&encoded).unwrap();
         assert_eq!((restored.width(), restored.height()), (12, 8));
+    }
+
+    #[test]
+    fn compress_file_keeps_format_and_downscales() {
+        let temp = temp_dir("compress");
+        let input_path = temp.join("input.png");
+        let registry = build_default();
+
+        let data = registry
+            .encode(&sample(), Format::Png, &Default::default())
+            .unwrap();
+        std::fs::write(&input_path, &data).unwrap();
+
+        let options = CompressOptions {
+            output_dir: temp.clone(),
+            format_strategy: CompressFormatStrategy::KeepOriginal,
+            downscale: crate::core::options::DownscaleLimit::Scale50,
+            ..Default::default()
+        };
+
+        let outcome = compress_file(&input_path, &registry, &options).unwrap();
+        assert_eq!(outcome.target_format, Format::Png);
+        assert_eq!(outcome.width, 3);
+        assert_eq!(outcome.height, 2);
+        assert!(outcome.output.exists());
+        std::fs::remove_dir_all(&temp).ok();
     }
 }

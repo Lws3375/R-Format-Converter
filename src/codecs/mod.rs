@@ -102,7 +102,11 @@ pub fn encode(image: &Image, format: Format, options: &EncodeOptions) -> Result<
     let prepared = prepared.as_ref();
     match format {
         Format::Jpeg => encode_with_jpeg(prepared, options.quality),
-        Format::Png => encode_with_png(prepared, options.png_compression_level),
+        Format::Png => encode_with_png(
+            prepared,
+            options.png_compression_level,
+            options.png_fast_mode,
+        ),
         other => {
             let img_format = image_format(other)
                 .ok_or_else(|| ConvertError::unsupported(format!("{}暂不支持编码", other.name())))?;
@@ -173,35 +177,39 @@ fn encode_with_jpeg(image: &Image, quality: u8) -> Result<Vec<u8>> {
     Ok(buffer.into_inner())
 }
 
-/// PNG 使用界面上的压缩等级,像素数据本身不受影响。
-fn encode_with_png(image: &Image, level: u8) -> Result<Vec<u8>> {
+/// PNG 使用界面上的压缩等级与加速配置,像素数据本身完全无损。
+fn encode_with_png(image: &Image, level: u8, fast_mode: bool) -> Result<Vec<u8>> {
     let mut buffer = Cursor::new(Vec::new());
-    let encoder =
-        PngEncoder::new_with_quality(&mut buffer, png_compression(level), FilterType::Adaptive);
+    let (compression, filter) = png_settings(level, fast_mode);
+    let encoder = PngEncoder::new_with_quality(&mut buffer, compression, filter);
     write_with(image, encoder)?;
     Ok(buffer.into_inner())
 }
 
+/// 根据压缩等级与快速模式决定压缩档位与行滤波器。
+fn png_settings(level: u8, fast_mode: bool) -> (CompressionType, FilterType) {
+    if fast_mode {
+        let comp = match level {
+            0 => CompressionType::Uncompressed,
+            1..=4 => CompressionType::Fast,
+            _ => CompressionType::Default,
+        };
+        (comp, FilterType::Sub)
+    } else {
+        match level {
+            0 => (CompressionType::Uncompressed, FilterType::NoFilter),
+            1..=3 => (CompressionType::Fast, FilterType::Sub),
+            4..=7 => (CompressionType::Default, FilterType::Sub),
+            _ => (CompressionType::Best, FilterType::Adaptive),
+        }
+    }
+}
+
 /// 用指定编码器写出图像。
-///
-/// 传入的位图应当已经过 [`prepare_for`] 处理,这里只负责把编码器自身的报错转成
-/// 软件统一的错误类型。
 fn write_with(image: &Image, encoder: impl ImageEncoder) -> Result<()> {
     image
         .write_with_encoder(encoder)
         .map_err(|error| ConvertError::corrupt(error.to_string()))
-}
-
-/// 把界面上的 0~9 压缩等级映射到 `image` 库的压缩档位。
-///
-/// 0 表示完全不压缩,9 表示最大压缩;像素数据无损,改变的只是文件体积与耗时。
-fn png_compression(level: u8) -> CompressionType {
-    match level {
-        0 => CompressionType::Uncompressed,
-        1..=3 => CompressionType::Fast,
-        4..=7 => CompressionType::Default,
-        _ => CompressionType::Best,
-    }
 }
 
 /// 按文件头/内容嗅探 SVG。

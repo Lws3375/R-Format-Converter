@@ -102,6 +102,20 @@ pub fn badge(ui: &mut Ui, text: &str, color: Color32) {
         });
 }
 
+/// 压缩率彩色胶囊徽章。
+pub fn compression_badge(ui: &mut Ui, percent: f64) {
+    let (text, color) = if percent <= -20.0 {
+        (format!("{percent:+.1}%"), theme::SUCCESS)
+    } else if percent < 0.0 {
+        (format!("{percent:+.1}%"), theme::ACCENT)
+    } else if percent == 0.0 {
+        ("0.0%".to_string(), theme::MUTED)
+    } else {
+        (format!("{percent:+.1}%"), theme::WARNING)
+    };
+    badge(ui, &text, color);
+}
+
 /// 泛型枚举下拉框,返回选项是否发生变化。
 pub fn enum_combo<T: Copy + PartialEq>(
     ui: &mut Ui,
@@ -343,9 +357,15 @@ pub fn encode_editor(ui: &mut Ui, options: &mut EncodeOptions, format: Format) -
                 .on_hover_text("等级越低转换越快,文件通常越大")
                 .changed();
         });
+        field(ui, "极速模式", |ui| {
+            changed |= ui
+                .checkbox(&mut options.png_fast_mode, "启用快速行滤波器")
+                .on_hover_text("启用轻量快速滤波器,处理速度提升数倍且体积基本一致")
+                .changed();
+        });
         hint(
             ui,
-            "调低等级可加快转换,调高等级可缩小文件;不会影响图像质量。",
+            "调低等级或开启极速模式可显著加快转换;调高等级可进一步缩小文件。",
         );
     } else if format == Format::Gif {
         hint(

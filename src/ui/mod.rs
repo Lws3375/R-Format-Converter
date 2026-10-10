@@ -2,6 +2,7 @@
 
 
 pub mod batch_view;
+pub mod compress_view;
 pub mod convert_view;
 pub mod history_view;
 pub mod settings_view;
@@ -11,7 +12,7 @@ pub mod widgets;
 use std::path::PathBuf;
 
 use crate::core::format::Format;
-use crate::core::options::ConvertOptions;
+use crate::core::options::{CompressOptions, ConvertOptions};
 use crate::core::registry::Registry;
 use crate::service::config::AppConfig;
 use crate::service::history::HistoryStore;
@@ -23,6 +24,8 @@ pub enum View {
     Convert,
     /// 多文件批量转换。
     Batch,
+    /// 图片压缩。
+    Compress,
     /// 转换历史。
     History,
     /// 软件设置与说明。
@@ -31,8 +34,14 @@ pub enum View {
 
 impl View {
     /// 全部分页,顺序与顶部导航一致。
-    pub fn all() -> [View; 4] {
-        [View::Convert, View::Batch, View::History, View::Settings]
+    pub fn all() -> [View; 5] {
+        [
+            View::Convert,
+            View::Batch,
+            View::Compress,
+            View::History,
+            View::Settings,
+        ]
     }
 
     /// 导航栏显示的名称。
@@ -40,6 +49,7 @@ impl View {
         match self {
             View::Convert => "转换",
             View::Batch => "批量",
+            View::Compress => "压缩",
             View::History => "历史",
             View::Settings => "设置",
         }
@@ -50,6 +60,7 @@ impl View {
         match self {
             View::Convert => "把一个文件转换成目标格式,可同时调整尺寸与颜色",
             View::Batch => "一次转换多个文件,使用同一套参数",
+            View::Compress => "专用图片体积瘦身,支持智能预设、批量极速压缩与体积对比",
             View::History => "查看历次转换的结果与耗时",
             View::Settings => "主题、并发数等软件级设置与格式说明",
         }
@@ -60,6 +71,7 @@ impl View {
         match self {
             View::Convert => "convert",
             View::Batch => "batch",
+            View::Compress => "compress",
             View::History => "history",
             View::Settings => "settings",
         }
@@ -83,6 +95,8 @@ pub enum TaskKind {
     Single,
     /// 批量分页发起的多文件任务。
     Batch,
+    /// 压缩分页发起的压缩任务。
+    Compress,
 }
 
 /// 各分页共享的上下文。
@@ -133,6 +147,15 @@ pub enum UiRequest {
         workers: usize,
         /// 任务来源分页。
         kind: TaskKind,
+    },
+    /// 提交一批图片压缩任务。
+    StartCompress {
+        /// 待压缩的文件。
+        files: Vec<PathBuf>,
+        /// 完整的压缩参数。
+        options: Box<CompressOptions>,
+        /// 并发线程数。
+        workers: usize,
     },
     /// 请求取消正在运行的任务。
     CancelBatch,

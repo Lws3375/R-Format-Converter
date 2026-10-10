@@ -11,11 +11,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use r_format_converter::codecs::build_default;
-use r_format_converter::convert::{apply_transforms, convert_file};
+use r_format_converter::convert::{apply_transforms, compress_file, convert_file};
 use r_format_converter::core::color::ColorType;
 use r_format_converter::core::format::Format;
 use r_format_converter::core::image::{Image, color_type};
-use r_format_converter::core::options::{ConvertOptions, EncodeOptions, ResizeMode, Rotation};
+use r_format_converter::core::options::{
+    CompressFormatStrategy, CompressOptions, CompressPreset, ConvertOptions, DownscaleLimit,
+    EncodeOptions, ResizeMode, Rotation,
+};
 use r_format_converter::core::registry::Registry;
 use r_format_converter::service::task::{TaskEvent, TaskRunner, TaskSummary};
 use r_format_converter::util::fs;
@@ -423,4 +426,84 @@ fn cancellation_leaves_a_consistent_summary() {
     assert!(summary.cancelled, "汇总应当标记为已取消");
     assert_eq!(summary.succeeded + summary.failed, summary.processed());
     assert!(summary.processed() <= 40);
+}
+
+#[test]
+fn image_compression_presets_and_parallel_pipeline() {
+    let registry = Arc::new(build_default());
+    let scratch = Scratch::new("compress_e2e");
+
+    // 1. 生成一张高分辨率平滑渐变图 (1000x800) 并保存为未压缩 BMP
+    let large_img = gradient_image(1000, 800);
+    let input_bmp = scratch.join("highres.bmp");
+    write_image(&registry, &large_img, Format::Bmp, &input_bmp);
+    let bmp_bytes = std::fs::metadata(&input_bmp).unwrap().len();
+
+    // 2. 智能均衡压缩测试 (保持原格式，最长边降采样至 2560px，由于 1000<2560 保持 1000x800)
+    let balanced_opts = CompressOptions {
+        output_dir: scratch.subdir("balanced_out"),
+        ..CompressOptions::from_preset(CompressPreset::Balanced)
+    };
+    let outcome_balanced = compress_file(&input_bmp, &registry, &balanced_opts)
+        .expect("智能均衡压缩应当成功");
+    assert_eq!(outcome_balanced.target_format, Format::Bmp);
+    assert_eq!((outcome_balanced.width, outcome_balanced.height), (1000, 800));
+
+    // 3. 转高效 WebP 极致压缩测试
+    let webp_opts = CompressOptions {
+        format_strategy: CompressFormatStrategy::Webp,
+        downscale: DownscaleLimit::Scale50, // 减半至 500x400
+        output_dir: scratch.subdir("webp_out"),
+        ..CompressOptions::from_preset(CompressPreset::MaxSaving)
+    };
+    let outcome_webp = compress_file(&input_bmp, &registry, &webp_opts)
+        .expect("转为 WebP 压缩应当成功");
+    assert_eq!(outcome_webp.target_format, Format::Webp);
+    assert_eq!((outcome_webp.width, outcome_webp.height), (500, 400));
+    assert!(
+        outcome_webp.output_bytes < bmp_bytes / 10,
+        "WebP 降采样压缩后体积应当远小于原始未压缩 BMP (原: {}, 新: {})",
+        bmp_bytes,
+        outcome_webp.output_bytes
+    );
+
+    // 4. 并发批量压缩测试 (TaskRunner::spawn_compress)
+    let mut batch_files = Vec::new();
+    for i in 0..5 {
+        let p = scratch.join(&format!("img_{i}.bmp"));
+        write_image(&registry, &gradient_image(64, 48), Format::Bmp, &p);
+        batch_files.push(p);
+    }
+
+    let compress_batch_opts = CompressOptions {
+        format_strategy: CompressFormatStrategy::KeepOriginal,
+        output_dir: scratch.subdir("batch_compress_out"),
+        ..CompressOptions::from_preset(CompressPreset::FastLossless)
+    };
+
+    let runner = TaskRunner::spawn_compress(
+        batch_files,
+        Arc::clone(&registry),
+        compress_batch_opts,
+        3,
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut final_summary: Option<TaskSummary> = None;
+    while final_summary.is_none() {
+        for event in runner.drain() {
+            if let TaskEvent::Finished(s) = event {
+                final_summary = Some(s);
+            }
+        }
+        if Instant::now() > deadline {
+            panic!("并发压缩超时");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let summary = final_summary.unwrap();
+    assert_eq!(summary.total, 5);
+    assert_eq!(summary.succeeded, 5);
+    assert_eq!(summary.failed, 0);
 }

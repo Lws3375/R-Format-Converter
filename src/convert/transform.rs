@@ -11,7 +11,7 @@ use image::imageops::FilterType;
 
 use crate::core::error::{ConvertError, Result};
 use crate::core::image::{Image, color_type, to_color, to_gray};
-use crate::core::options::{ResizeMode, Rotation, TransformOptions};
+use crate::core::options::{DownscaleLimit, ResizeMode, Rotation, TransformOptions};
 
 /// 缩放后允许的最大像素数,防止误填超大尺寸把内存吃光。
 const MAX_PIXELS: u64 = 1 << 30;
@@ -83,6 +83,17 @@ fn resize(image: Image, target: Option<(u32, u32)>, mode: ResizeMode) -> Result<
         ResizeMode::Bilinear => FilterType::Triangle,
     };
     Ok(image.resize_exact(width, height, filter))
+}
+
+/// 根据降采样限制对图像执行等比缩放。
+///
+/// 若计算得出的目标尺寸与原尺寸一致,则原样返回,避免重复重采样。
+pub fn downscale_by_limit(image: Image, limit: DownscaleLimit) -> Result<Image> {
+    let (target_w, target_h) = limit.calculate_target_size(image.width(), image.height());
+    if target_w == image.width() && target_h == image.height() {
+        return Ok(image);
+    }
+    resize(image, Some((target_w, target_h)), ResizeMode::Bilinear)
 }
 
 #[cfg(test)]
@@ -223,5 +234,16 @@ mod tests {
         let second = apply_transforms(sample(), &options).unwrap();
         assert_eq!(first.to_rgba8().as_raw(), second.to_rgba8().as_raw());
         assert_eq!((first.width(), first.height()), (3, 3));
+    }
+
+    #[test]
+    fn downscale_by_limit_respects_limits() {
+        let img = sample(); // 4x2
+        let scaled = downscale_by_limit(img, DownscaleLimit::Scale50).unwrap();
+        assert_eq!((scaled.width(), scaled.height()), (2, 1));
+
+        let img = sample();
+        let unchanged = downscale_by_limit(img, DownscaleLimit::Original).unwrap();
+        assert_eq!((unchanged.width(), unchanged.height()), (4, 2));
     }
 }

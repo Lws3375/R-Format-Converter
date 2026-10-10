@@ -15,9 +15,18 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::convert::{convert_file, ConversionOutcome};
-use crate::core::options::ConvertOptions;
+use crate::convert::{compress_file, convert_file, ConversionOutcome};
+use crate::core::options::{CompressOptions, ConvertOptions};
 use crate::core::registry::Registry;
+
+/// 任务执行模式。
+#[derive(Debug, Clone)]
+pub enum TaskJob {
+    /// 常规格式转换任务。
+    Convert(ConvertOptions),
+    /// 图片压缩任务。
+    Compress(CompressOptions),
+}
 
 /// 批量任务在运行过程中向界面汇报的事件。
 #[derive(Debug)]
@@ -97,14 +106,31 @@ pub struct TaskRunner {
 }
 
 impl TaskRunner {
-    /// 启动一次批量转换。
-    ///
-    /// `workers` 会被限制在 `1..=文件数` 之间;文件数为 0 时也会正常发送开始与结束
-    /// 事件,界面无需特判。
+    /// 启动一次批量格式转换。
     pub fn spawn(
         files: Vec<PathBuf>,
         registry: Arc<Registry>,
         options: ConvertOptions,
+        workers: usize,
+    ) -> Self {
+        Self::spawn_job(files, registry, TaskJob::Convert(options), workers)
+    }
+
+    /// 启动一次批量图片压缩。
+    pub fn spawn_compress(
+        files: Vec<PathBuf>,
+        registry: Arc<Registry>,
+        options: CompressOptions,
+        workers: usize,
+    ) -> Self {
+        Self::spawn_job(files, registry, TaskJob::Compress(options), workers)
+    }
+
+    /// 按指定的任务模式启动并发任务。
+    pub fn spawn_job(
+        files: Vec<PathBuf>,
+        registry: Arc<Registry>,
+        job: TaskJob,
         workers: usize,
     ) -> Self {
         let total = files.len();
@@ -114,11 +140,11 @@ impl TaskRunner {
         let coordinator = {
             let cancel = Arc::clone(&cancel);
             thread::Builder::new()
-                .name("r-convert-coordinator".to_string())
+                .name("r-task-coordinator".to_string())
                 .spawn(move || {
-                    run_batch(files, registry, options, workers, cancel, sender);
+                    run_batch(files, registry, job, workers, cancel, sender);
                 })
-                .expect("无法创建批量转换线程")
+                .expect("无法创建批量任务线程")
         };
 
         Self {
@@ -175,7 +201,7 @@ impl Drop for TaskRunner {
 fn run_batch(
     files: Vec<PathBuf>,
     registry: Arc<Registry>,
-    options: ConvertOptions,
+    job: TaskJob,
     workers: usize,
     cancel: Arc<AtomicBool>,
     sender: Sender<TaskEvent>,
@@ -200,7 +226,7 @@ fn run_batch(
                 let succeeded = Arc::clone(&succeeded);
                 let failed = Arc::clone(&failed);
                 let sender = sender.clone();
-                let options = &options;
+                let job = &job;
 
                 scope.spawn(move || {
                     loop {
@@ -221,7 +247,12 @@ fn run_batch(
                             path: path.clone(),
                         });
 
-                        match convert_file(&path, &registry, options) {
+                        let result = match job {
+                            TaskJob::Convert(options) => convert_file(&path, &registry, options),
+                            TaskJob::Compress(options) => compress_file(&path, &registry, options),
+                        };
+
+                        match result {
                             Ok(outcome) => {
                                 succeeded.fetch_add(1, Ordering::Relaxed);
                                 let _ = sender.send(TaskEvent::FileFinished {
@@ -442,6 +473,23 @@ mod tests {
         let runner = TaskRunner::spawn(files, registry, options, 16);
         let summary = wait_for_summary(&runner);
         assert_eq!(summary.succeeded, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn spawn_compress_processes_all_files() {
+        let (dir, files) = prepare_inputs("task-compress", 3, 16);
+        let registry = Arc::new(build_default());
+        let options = CompressOptions {
+            output_dir: dir.join("out"),
+            ..Default::default()
+        };
+
+        let runner = TaskRunner::spawn_compress(files, registry, options, 2);
+        let summary = wait_for_summary(&runner);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.succeeded, 3);
+        assert_eq!(summary.failed, 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

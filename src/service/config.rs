@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::{ConvertError, Result};
 use crate::core::format::Format;
-use crate::core::options::{ConvertOptions, EncodeOptions, NamingRule, TransformOptions};
+use crate::core::options::{
+    CompressOptions, ConvertOptions, EncodeOptions, NamingRule, TransformOptions,
+};
 use crate::util::fs::{app_data_dir, ensure_dir, read_file, write_file};
 
 /// 配置文件名。
@@ -58,6 +60,9 @@ pub struct AppConfig {
     pub transform: TransformOptions,
     /// 编码参数。
     pub encode: EncodeOptions,
+    /// 压缩专有参数。
+    #[serde(default)]
+    pub compress: CompressOptions,
     /// 批量转换的并行线程数。
     pub max_workers: usize,
     /// 界面配色方案。
@@ -77,6 +82,7 @@ impl Default for AppConfig {
             overwrite: false,
             transform: TransformOptions::default(),
             encode: EncodeOptions::default(),
+            compress: CompressOptions::default(),
             max_workers: default_workers(),
             theme: ThemeMode::default(),
             last_input_dir: None,
@@ -135,6 +141,8 @@ impl AppConfig {
         self.max_workers = self.max_workers.clamp(1, 64);
         self.encode.quality = self.encode.quality.clamp(1, 100);
         self.encode.png_compression_level = self.encode.png_compression_level.min(9);
+        self.compress.quality = self.compress.quality.clamp(1, 100);
+        self.compress.png_level = self.compress.png_level.min(9);
         if let Some((width, height)) = self.transform.resize {
             // 尺寸为 0 无法生成有效图像,直接清除该设置。
             if width == 0 || height == 0 {
@@ -155,6 +163,11 @@ impl AppConfig {
             transform: self.transform.clone(),
             encode: self.encode,
         }
+    }
+
+    /// 由当前配置构造一次压缩任务的参数。
+    pub fn to_compress_options(&self) -> CompressOptions {
+        self.compress.clone()
     }
 
     /// 用最近一次转换的设置更新配置,便于下次启动直接复用。
@@ -231,6 +244,12 @@ mod tests {
             encode: EncodeOptions {
                 quality: 250,
                 png_compression_level: 20,
+                ..Default::default()
+            },
+            compress: CompressOptions {
+                quality: 255,
+                png_level: 15,
+                ..Default::default()
             },
             transform: TransformOptions {
                 resize: Some((0, 100)),
@@ -242,6 +261,8 @@ mod tests {
         assert_eq!(config.max_workers, 1);
         assert_eq!(config.encode.quality, 100);
         assert_eq!(config.encode.png_compression_level, 9);
+        assert_eq!(config.compress.quality, 100);
+        assert_eq!(config.compress.png_level, 9);
         assert_eq!(config.transform.resize, None);
 
         config.transform.resize = Some((999_999, 100));

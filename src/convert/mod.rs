@@ -11,5 +11,5 @@
 pub mod pipeline;
 pub mod transform;
 
-pub use pipeline::{convert_bytes, convert_file, ConversionOutcome};
+pub use pipeline::{compress_file, convert_bytes, convert_file, ConversionOutcome};
 pub use transform::apply_transforms;

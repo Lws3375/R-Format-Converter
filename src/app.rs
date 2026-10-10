@@ -11,13 +11,14 @@ use egui::{Align, Layout, RichText, Ui};
 
 use crate::codecs::build_default;
 use crate::core::format::Format;
-use crate::core::options::ConvertOptions;
+use crate::core::options::{CompressOptions, ConvertOptions};
 use crate::core::registry::Registry;
 use crate::core::{APP_FULL_NAME, APP_NAME, APP_VERSION};
 use crate::service::config::AppConfig;
 use crate::service::history::{HistoryEntry, HistoryStore, MAX_HISTORY_ENTRIES};
 use crate::service::task::{TaskEvent, TaskRunner};
 use crate::ui::batch_view::{BatchView, LogKind};
+use crate::ui::compress_view::CompressView;
 use crate::ui::convert_view::ConvertView;
 use crate::ui::history_view::HistoryView;
 use crate::ui::settings_view::SettingsView;
@@ -93,6 +94,8 @@ pub struct App {
     convert: ConvertView,
     /// 批量分页的状态。
     batch: BatchView,
+    /// 压缩分页的状态。
+    compress: CompressView,
     /// 历史分页的状态。
     history_view: HistoryView,
     /// 设置分页的状态。
@@ -122,6 +125,7 @@ impl App {
             view: View::Convert,
             convert: ConvertView::new(),
             batch: BatchView::new(),
+            compress: CompressView::new(),
             history_view: HistoryView::new(),
             settings: SettingsView::new(),
             runner: None,
@@ -229,6 +233,7 @@ impl App {
             }
             self.task_kind = None;
             self.convert.busy = false;
+            self.compress.busy = false;
         }
     }
 
@@ -239,6 +244,8 @@ impl App {
                 if self.task_kind == Some(TaskKind::Batch) {
                     let workers = self.config.max_workers.max(1);
                     self.batch.begin(total, workers);
+                } else if self.task_kind == Some(TaskKind::Compress) {
+                    self.compress.begin(total);
                 }
             }
             TaskEvent::FileStarted { index, path } => {
@@ -248,6 +255,8 @@ impl App {
                 self.message_is_error = false;
                 if self.task_kind == Some(TaskKind::Batch) {
                     self.batch.advance(index);
+                } else if self.task_kind == Some(TaskKind::Compress) {
+                    self.compress.advance(index);
                 }
             }
             TaskEvent::FileFinished { index, outcome } => {
@@ -264,6 +273,8 @@ impl App {
                         outcome.target_format.name()
                     );
                     self.batch.push_log(text, LogKind::Success);
+                } else if self.task_kind == Some(TaskKind::Compress) {
+                    self.compress.record_outcome(outcome);
                 } else {
                     self.convert.report_success(outcome);
                 }
@@ -286,6 +297,8 @@ impl App {
                     self.batch.advance(index + 1);
                     let text = format!("{name} 转换失败:{message}");
                     self.batch.push_log(text, LogKind::Failure);
+                } else if self.task_kind == Some(TaskKind::Compress) {
+                    self.compress.advance(index + 1);
                 } else {
                     self.convert.report_failure(format!("{name} 转换失败:{message}"));
                 }
@@ -295,6 +308,8 @@ impl App {
                 self.message_is_error = summary.failed > 0;
                 if self.task_kind == Some(TaskKind::Batch) {
                     self.batch.finish(summary);
+                } else if self.task_kind == Some(TaskKind::Compress) {
+                    self.compress.finish();
                 }
                 let _ = self.history.save();
             }
@@ -335,6 +350,11 @@ impl App {
                     workers,
                     kind,
                 } => self.start_batch(files, *options, workers, kind),
+                UiRequest::StartCompress {
+                    files,
+                    options,
+                    workers,
+                } => self.start_compress(files, *options, workers),
                 UiRequest::CancelBatch => {
                     if let Some(runner) = self.runner.as_ref() {
                         runner.cancel();
@@ -412,6 +432,45 @@ impl App {
         ));
     }
 
+    /// 提交一批图片压缩任务。
+    fn start_compress(
+        &mut self,
+        files: Vec<PathBuf>,
+        options: CompressOptions,
+        workers: usize,
+    ) {
+        if files.is_empty() {
+            self.status = "没有可压缩的文件".to_string();
+            self.message_is_error = true;
+            return;
+        }
+
+        if self.runner.is_some() {
+            self.status = "已有任务正在运行,请先取消或等待其结束".to_string();
+            self.message_is_error = true;
+            return;
+        }
+
+        if let Some(parent) = first_parent(&files) {
+            self.config.last_input_dir = Some(parent.to_path_buf());
+        }
+        let _ = self.config.save();
+
+        let count = files.len();
+        let workers = workers.max(1);
+        self.task_kind = Some(TaskKind::Compress);
+        self.compress.begin(count);
+        self.status = format!("已提交 {count} 个压缩任务,使用 {workers} 个线程");
+        self.message_is_error = false;
+
+        self.runner = Some(TaskRunner::spawn_compress(
+            files,
+            Arc::clone(&self.registry),
+            options,
+            workers,
+        ));
+    }
+
     /// 处理拖放进窗口的文件:批量分页追加到列表,其它分页交给转换分页。
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|input| {
@@ -431,7 +490,9 @@ impl App {
             self.config.last_input_dir = Some(parent.to_path_buf());
         }
 
-        if self.view == View::Batch {
+        if self.view == View::Compress {
+            self.compress.add_inputs(dropped);
+        } else if self.view == View::Batch {
             self.batch.add_inputs(dropped);
         } else {
             self.view = View::Convert;
@@ -461,6 +522,7 @@ impl App {
             let produced = match self.view {
                 View::Convert => self.convert.render(ui, &mut ui_ctx),
                 View::Batch => self.batch.render(ui, &mut ui_ctx),
+                View::Compress => self.compress.render(ui, &mut ui_ctx),
                 View::History => self.history_view.render(ui, &mut ui_ctx),
                 View::Settings => self.settings.render(ui, &mut ui_ctx),
             };
