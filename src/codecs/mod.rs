@@ -23,6 +23,9 @@ use crate::core::registry::Registry;
 /// ICO 图标允许的最大边长。
 pub const ICO_MAX_DIMENSION: u32 = 256;
 
+/// GIF 图像允许的最大边长 (16 位无符号整数上限)。
+pub const GIF_MAX_DIMENSION: u32 = 65535;
+
 /// 装配软件支持的格式列表。
 ///
 /// 列表顺序同时决定界面目标格式下拉框的排列顺序,因此保持稳定;TGA 放在最后,
@@ -32,6 +35,7 @@ pub fn build_default() -> Registry {
         Format::Bmp,
         Format::Netpbm,
         Format::Png,
+        Format::Gif,
         Format::Qoi,
         Format::Farbfeld,
         Format::Ico,
@@ -112,7 +116,7 @@ pub fn output_extension(image: &Image, format: Format) -> &'static str {
 fn prepare_for(image: &Image, format: Format) -> Cow<'_, Image> {
     match format {
         Format::Ico => ensure(image, ColorType::Rgba8),
-        Format::Qoi => match color_type(image) {
+        Format::Qoi | Format::Gif => match color_type(image) {
             ColorType::Gray8 => ensure(image, ColorType::Rgb8),
             ColorType::GrayAlpha8 => ensure(image, ColorType::Rgba8),
             _ => Cow::Borrowed(image),
@@ -336,5 +340,23 @@ mod tests {
     fn corrupt_data_is_reported_not_panicking() {
         let err = decode(&[0u8; 64], Format::Bmp).unwrap_err();
         assert!(matches!(err, ConvertError::Corrupt(_)));
+    }
+
+    #[test]
+    fn gif_round_trip_preserves_dimensions_and_approximate_colors() {
+        let registry = build_default();
+        let source = sample_image();
+        let encoded = registry
+            .encode(&source, Format::Gif, &EncodeOptions::default())
+            .expect("GIF 编码失败");
+        let detected = registry.detect(&encoded);
+        assert_eq!(detected, Some(Format::Gif));
+        let decoded = registry
+            .decode_as(&encoded, Format::Gif)
+            .expect("GIF 解码失败");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (source.width(), source.height())
+        );
     }
 }

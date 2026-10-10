@@ -116,12 +116,12 @@ mod tests {
                 format.id()
             );
         }
-        assert_eq!(registry.codec_count(), 8);
+        assert_eq!(registry.codec_count(), 9);
     }
 
     #[test]
     fn unregistered_format_reports_unsupported() {
-        let registry = build_default();
+        let registry = Registry::new(vec![Format::Png]);
         let image = crate::core::image::to_color(
             &Image::ImageRgba8(image::RgbaImage::new(1, 1)),
             ColorType::Gray8,
@@ -133,23 +133,21 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_format_explains_itself() {
+    fn implemented_format_passes_check() {
         let registry = build_default();
-        // GIF 未启用,应先被"不支持"拦下;若将来启用,则应给出"尚未实现"的说明。
         let image = Image::ImageRgba8(image::RgbaImage::new(1, 1));
-        let err = registry
-            .decode_as(b"", Format::Gif)
-            .expect_err("GIF 未启用时不应解码成功");
-        assert!(matches!(err, ConvertError::UnsupportedFormat(_)));
-        assert!(registry.output_extension(&image, Format::Png) == "png");
+        assert!(registry.output_extension(&image, Format::Gif) == "gif");
+        assert!(registry.is_supported(Format::Gif));
     }
 
     #[test]
     fn detect_ignores_formats_that_are_not_enabled() {
-        let registry = build_default();
-        // GIF 文件头能被识别出来,但注册表未启用该格式,因此对外不可见。
+        let registry = Registry::new(vec![Format::Png]);
         let gif = b"GIF89a\x01\x00\x01\x00\x00\x00\x00;";
         assert!(codecs::detect(gif).is_some());
         assert!(registry.detect(gif).is_none());
+
+        let default_reg = build_default();
+        assert_eq!(default_reg.detect(gif), Some(Format::Gif));
     }
 }

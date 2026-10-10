@@ -133,11 +133,37 @@ fn every_writable_format_survives_a_round_trip() {
             let mean_error = total_error as f64 / expected.as_raw().len() as f64;
             assert!(
                 mean_error <= 20.0,
-                "{} JPEG 往返平均通道误差过大:{mean_error}",
+                "{} 往返平均通道误差过大:{mean_error}",
                 target.name()
             );
         }
     }
+}
+
+#[test]
+fn gif_round_trip_conversion_and_notes() {
+    let registry = build_default();
+    let scratch = Scratch::new("gif-test");
+
+    // 渐变图，转为 GIF
+    let source = gradient_image(40, 30);
+    let input = scratch.join("source.bmp");
+    write_image(&registry, &source, Format::Bmp, &input);
+
+    let gif_dir = scratch.subdir("gif_out");
+    let options = ConvertOptions::new(Format::Gif, gif_dir);
+    let outcome = convert_file(&input, &registry, &options).expect("转为 GIF 应当成功");
+    assert_eq!(outcome.target_format, Format::Gif);
+    assert_eq!((outcome.width, outcome.height), (40, 30));
+    assert!(outcome.output.exists());
+
+    // 从输出的 GIF 转换为 PNG
+    let png_dir = scratch.subdir("png_out");
+    let options_png = ConvertOptions::new(Format::Png, png_dir);
+    let outcome_png = convert_file(&outcome.output, &registry, &options_png).expect("从 GIF 转为 PNG 应当成功");
+    assert_eq!(outcome_png.source_format, Format::Gif);
+    assert_eq!(outcome_png.target_format, Format::Png);
+    assert_eq!((outcome_png.width, outcome_png.height), (40, 30));
 }
 
 #[test]

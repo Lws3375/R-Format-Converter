@@ -347,6 +347,11 @@ pub fn encode_editor(ui: &mut Ui, options: &mut EncodeOptions, format: Format) -
             ui,
             "调低等级可加快转换,调高等级可缩小文件;不会影响图像质量。",
         );
+    } else if format == Format::Gif {
+        hint(
+            ui,
+            "GIF 格式使用 256 色调色板与 LZW 压缩算法,无需额外编码参数。",
+        );
     } else {
         field(ui, "编码质量", |ui| {
             let mut quality = options.quality as f64;
@@ -558,6 +563,14 @@ mod tests {
         let changed = run_frame(&ctx, |ui| encode_editor(ui, &mut options, Format::Png));
         assert!(!changed);
         assert_eq!(options.png_compression_level, 1);
+    }
+
+    #[test]
+    fn encode_editor_renders_gif_hint() {
+        let ctx = egui::Context::default();
+        let mut options = EncodeOptions::default();
+        let changed = run_frame(&ctx, |ui| encode_editor(ui, &mut options, Format::Gif));
+        assert!(!changed);
     }
 
     #[test]

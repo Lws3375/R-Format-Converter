@@ -84,7 +84,7 @@ impl Format {
             Format::Farbfeld => "16 位每通道的高精度无损格式",
             Format::Ico => "Windows 图标容器,内部为 BMP 结构",
             Format::Png => "支持透明度与隔行的无损压缩图像格式",
-            Format::Gif => "支持动画与调色板,计划于第二阶段实现",
+            Format::Gif => "动图与调色板格式,支持 256 色与二值透明度",
             Format::Jpeg => "有损照片格式,不支持透明度",
         }
     }
@@ -126,12 +126,12 @@ impl Format {
 
     /// 是否为无损格式。
     pub fn is_lossless(self) -> bool {
-        !matches!(self, Format::Jpeg)
+        !matches!(self, Format::Jpeg | Format::Gif)
     }
 
     /// 该格式是否已实现。
     pub fn is_implemented(self) -> bool {
-        !matches!(self, Format::Gif)
+        true
     }
 
     /// 由扩展名推断格式。
@@ -187,10 +187,9 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_formats_are_marked_unimplemented() {
-        assert!(Format::Png.is_implemented());
-        assert!(!Format::Gif.is_implemented());
-        assert!(Format::Jpeg.is_implemented());
-        assert!(Format::Bmp.is_implemented());
+    fn all_formats_are_implemented() {
+        for format in Format::all() {
+            assert!(format.is_implemented(), "{} 应已标记为实现", format.id());
+        }
     }
 }

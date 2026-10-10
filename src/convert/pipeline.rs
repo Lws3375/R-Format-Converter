@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::codecs::ICO_MAX_DIMENSION;
+use crate::codecs::{GIF_MAX_DIMENSION, ICO_MAX_DIMENSION};
 use crate::convert::transform::apply_transforms;
 use crate::core::error::{ConvertError, Result};
 use crate::core::format::Format;
@@ -202,6 +202,17 @@ fn preflight(image: &Image, target: Format) -> Result<()> {
             image.height()
         )));
     }
+    if target == Format::Gif
+        && (image.width() > GIF_MAX_DIMENSION || image.height() > GIF_MAX_DIMENSION)
+    {
+        return Err(ConvertError::unsupported(format!(
+            "GIF 图像最大支持 {}×{},当前图像为 {}×{},请先设置缩放",
+            GIF_MAX_DIMENSION,
+            GIF_MAX_DIMENSION,
+            image.width(),
+            image.height()
+        )));
+    }
     Ok(())
 }
 
@@ -224,6 +235,10 @@ fn collect_notes(
             "{} 不支持透明度,半透明像素已按不透明处理",
             target.name()
         ));
+    }
+
+    if target == Format::Gif && has_semi_transparent_pixel(image) {
+        notes.push("GIF 仅支持二值透明度，半透明像素已被处理为完全透明或不透明".to_string());
     }
 
     if source_bytes > 0 && output_bytes > source_bytes {
@@ -404,19 +419,23 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_target_is_rejected_before_encoding() {
+    fn gif_target_conversion_succeeds() {
         let registry = build_default();
         let options = ConvertOptions::new(Format::Gif, PathBuf::new());
-        let err = convert_bytes(
-            &registry
-                .encode(&sample(), Format::Qoi, &Default::default())
-                .unwrap(),
-            &registry,
-            &options,
-        )
-        .unwrap_err();
+        let data = registry
+            .encode(&sample(), Format::Qoi, &Default::default())
+            .unwrap();
+        let result = convert_bytes(&data, &registry, &options);
+        assert!(result.is_ok(), "GIF 转换应成功: {:?}", result.err());
+    }
+
+    #[test]
+    fn oversize_image_for_gif_is_rejected_with_hint() {
+        let big = Image::ImageRgb8(image::RgbImage::new(65536, 1));
+        let options = ConvertOptions::new(Format::Gif, PathBuf::new());
+        let err = preflight(&big, options.target).unwrap_err();
         match err {
-            ConvertError::UnsupportedFeature(message) => assert!(message.contains("GIF")),
+            ConvertError::UnsupportedFeature(message) => assert!(message.contains("65535")),
             other => panic!("期望 UnsupportedFeature,实际 {other:?}"),
         }
     }
